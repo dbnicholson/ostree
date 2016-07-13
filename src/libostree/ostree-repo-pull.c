@@ -99,6 +99,9 @@ typedef struct {
   gboolean          is_commit_only;
   gboolean          is_untrusted;
 
+  gboolean      process_deltas;
+  gboolean      mirror_deltas;
+
   char         *dir;
   gboolean      commitpartial_exists;
 
@@ -129,6 +132,9 @@ typedef struct {
   OtPullData  *pull_data;
   GVariant *objects;
   char *expected_checksum;
+  char *from_revision;
+  char *to_revision;
+  guint part_number;
 } FetchStaticDeltaData;
 
 typedef struct {
@@ -941,6 +947,8 @@ static void
 fetch_static_delta_data_free (gpointer  data)
 {
   FetchStaticDeltaData *fetch_data = data;
+  g_free (fetch_data->from_revision);
+  g_free (fetch_data->to_revision);
   g_free (fetch_data->expected_checksum);
   g_variant_unref (fetch_data->objects);
   g_free (fetch_data);
@@ -969,6 +977,49 @@ on_static_delta_written (GObject           *object,
   fetch_static_delta_data_free (fetch_data);
 }
 
+static gboolean
+store_static_delta_part (GFile         *part_path,
+                         const char    *temp_path,
+                         GCancellable  *cancellable,
+                         GError       **error)
+{
+  gboolean ret = FALSE;
+  g_autoptr(GFile) delta_dir = NULL;
+
+  delta_dir = g_file_get_parent (part_path);
+  if (!glnx_shutil_mkdir_p_at (AT_FDCWD, gs_file_get_path_cached (delta_dir),
+                               0755, cancellable, error))
+    goto out;
+
+  if (linkat (AT_FDCWD, temp_path, AT_FDCWD,
+              gs_file_get_path_cached (part_path), 0) != 0)
+    {
+      if (errno != EEXIST)
+        {
+          glnx_set_error_from_errno (error);
+          goto out;
+        }
+    }
+
+  /* out = g_file_replace (part_path, NULL, FALSE, */
+  /*                       G_FILE_CREATE_REPLACE_DESTINATION, */
+  /*                       cancellable, error); */
+  /* if (!out) */
+  /*   goto out; */
+
+  /* if (g_output_stream_splice (G_OUTPUT_STREAM (out), */
+  /*                             part_input, 0, */
+  /*                             canceallable, error) < 0) */
+  /*   goto out; */
+
+  /* if (!g_output_stream_close (G_OUTPUT_STREAM (out))) */
+  /*   goto out; */
+
+  ret = TRUE;
+ out:
+  return ret;
+}
+
 static void
 static_deltapart_fetch_on_complete (GObject           *object,
                                     GAsyncResult      *result,
@@ -992,6 +1043,19 @@ static_deltapart_fetch_on_complete (GObject           *object,
   if (!temp_path)
     goto out;
 
+  if (pull_data->mirror_deltas)
+    {
+      g_autofree char *part_name =
+        _ostree_get_relative_static_delta_part_path (fetch_data->from_revision,
+                                                     fetch_data->to_revision,
+                                                     fetch_data->part_number);
+      g_autoptr(GFile) part_path =
+        g_file_resolve_relative_path (self->repo->repodir, part_name);
+
+      if (!store_static_delta_part (part_path, temp_path, cancellable, error))
+        goto out;
+    }
+
   fd = openat (_ostree_fetcher_get_dfd (fetcher), temp_path, O_RDONLY | O_CLOEXEC);
   if (fd == -1)
     {
@@ -1008,21 +1072,24 @@ static_deltapart_fetch_on_complete (GObject           *object,
 
   in = g_unix_input_stream_new (fd, FALSE);
 
-  /* TODO - make async */
-  if (!_ostree_static_delta_part_open (in, NULL, 0, fetch_data->expected_checksum,
+  if (pull_data->process_deltas)
+    {
+      /* TODO - make async */
+      if (!_ostree_static_delta_part_open (in, NULL, 0, fetch_data->expected_checksum,
                                        &part, pull_data->cancellable, error))
-    goto out;
+        goto out;
 
-  _ostree_static_delta_part_execute_async (pull_data->repo,
-                                           fetch_data->objects,
-                                           part,
-                                           /* Trust checksums if summary was gpg signed */
-                                           pull_data->gpg_verify_summary && pull_data->summary_data_sig,
-                                           pull_data->cancellable,
-                                           on_static_delta_written,
-                                           fetch_data);
-  pull_data->n_outstanding_deltapart_write_requests++;
-  free_fetch_data = FALSE;
+      _ostree_static_delta_part_execute_async (pull_data->repo,
+                                               fetch_data->objects,
+                                               part,
+                                               /* Trust checksums if summary was gpg signed */
+                                               pull_data->gpg_verify_summary && pull_data->summary_data_sig,
+                                               pull_data->cancellable,
+                                               on_static_delta_written,
+                                               fetch_data);
+      pull_data->n_outstanding_deltapart_write_requests++;
+      free_fetch_data = FALSE;
+    }
 
  out:
   g_assert (pull_data->n_outstanding_deltapart_fetches > 0);
@@ -1415,6 +1482,35 @@ load_remote_repo_config (OtPullData    *pull_data,
 }
 
 static gboolean
+store_static_delta_superblock (const GFile   *superblock_path,
+                               const GBytes   superblock_data,
+                               GCancellable  *cancellable,
+                               GError       **error)
+{
+  gboolean ret = FALSE;
+  g_autoptr(GFile) delta_dir = NULL;
+
+  delta_dir = g_file_get_parent (superblock_path);
+  if (!glnx_shutil_mkdir_p_at (AT_FDCWD, gs_file_get_path_cached (delta_dir),
+                               0755, cancellable, error))
+    goto out;
+
+  if (!g_file_replace_contents (superblock_path,
+                                g_bytes_get_data (superblock_data),
+                                g_bytes_get_size (superblock_data),
+                                NULL, FALSE, 0, NULL,
+                                cancellable, error))
+    {
+      g_prefix_error (error, "Unable to write delta superblock: ");
+      goto out;
+    }
+
+  ret = TRUE;
+ out:
+  return ret;
+}
+
+static gboolean
 request_static_delta_superblock_sync (OtPullData  *pull_data,
                                       const char  *from_revision,
                                       const char  *to_revision,
@@ -1476,6 +1572,18 @@ request_static_delta_superblock_sync (OtPullData  *pull_data,
 
       ret_delta_superblock = g_variant_new_from_bytes ((GVariantType*)OSTREE_STATIC_DELTA_SUPERBLOCK_FORMAT,
                                                        delta_superblock_data, FALSE);
+
+      /* Always save the superblock to the repo when mirroring */
+      if (pull_data->mirror_deltas)
+        {
+          g_autoptr(GFile) superblock_path =
+            g_file_resolve_relative_path (self->repo->repodir, delta_name);
+
+          if (!store_static_delta_superblock (superblock_path,
+                                              delta_superblock_data,
+                                              cancellable, error))
+            goto out;
+        }
     }
   
   ret = TRUE;
@@ -1647,7 +1755,8 @@ process_one_static_delta (OtPullData   *pull_data,
     {
       const guchar *csum;
       g_autoptr(GVariant) header = NULL;
-      gboolean have_all = FALSE;
+      gboolean have_all = TRUE;
+      gboolean have_part = TRUE;
       SoupURI *target_uri = NULL;
       g_autofree char *deltapart_path = NULL;
       FetchStaticDeltaData *fetch_data;
@@ -1676,29 +1785,52 @@ process_one_static_delta (OtPullData   *pull_data,
       if (!csum)
         goto out;
 
-      if (!_ostree_repo_static_delta_part_have_all_objects (pull_data->repo,
-                                                            objects,
-                                                            &have_all,
-                                                            cancellable, error))
-        goto out;
+      if (pull_data->process_deltas)
+        if (!_ostree_repo_static_delta_part_have_all_objects (pull_data->repo,
+                                                              objects,
+                                                              &have_all,
+                                                              cancellable, error))
+          goto out;
 
-      if (have_all)
+      deltapart_path = _ostree_get_relative_static_delta_part_path (from_revision, to_revision, i);
+      if (pull_data->mirror_deltas)
         {
-          g_debug ("Have all objects from static delta %s-%s part %u",
-                   from_revision ? from_revision : "empty", to_revision,
-                   i);
+          struct stat stbuf;
+
+          if (TEMP_FAILURE_RETRY (fstatat (pull_data->repo->repo_dir_fd,
+                                           deltapart_path, &stbuf,
+                                           AT_SYMLINK_NOFOLLOW)) != 0)
+            {
+              if (errno != ENOENT)
+                {
+                  glnx_set_error_from_errno (error);
+                  goto out;
+                }
+              have_part = FALSE;
+            }
+        }
+
+      if (have_all && have_part)
+        {
+          if (pull_data->process_deltas)
+            g_debug ("Have all objects from static delta %s-%s part %u",
+                     from_revision ? from_revision : "empty", to_revision,
+                     i);
+          if (pull_data->mirror_deltas)
+            g_debug ("Have static delta %s-%s part %u",
+                     from_revision ? from_revision : "empty", to_revision,
+                     i);
           pull_data->n_fetched_deltaparts++;
           continue;
         }
 
-      deltapart_path = _ostree_get_relative_static_delta_part_path (from_revision, to_revision, i);
+      if (pull_data->process_deltas)
+        { g_autoptr(GVariant) part_datav =
+            g_variant_lookup_value (metadata, deltapart_path, G_VARIANT_TYPE ("(yay)"));
 
-      { g_autoptr(GVariant) part_datav =
-          g_variant_lookup_value (metadata, deltapart_path, G_VARIANT_TYPE ("(yay)"));
-
-        if (part_datav)
-          inline_part_bytes = g_variant_get_data_as_bytes (part_datav);
-      }
+          if (part_datav)
+            inline_part_bytes = g_variant_get_data_as_bytes (part_datav);
+        }
 
       pull_data->total_deltapart_size += size;
       pull_data->total_deltapart_usize += usize;
@@ -1710,6 +1842,9 @@ process_one_static_delta (OtPullData   *pull_data,
       fetch_data->pull_data = pull_data;
       fetch_data->objects = g_variant_ref (objects);
       fetch_data->expected_checksum = ostree_checksum_from_bytes_v (csum_v);
+      fetch_data->from_revision = g_strdup (from_revision);
+      fetch_data->to_revision = g_strdup (to_revision);
+      fetch_data->part_number = i;
 
       if (inline_part_bytes != NULL)
         {
@@ -2150,6 +2285,12 @@ repo_remote_fetch_summary (OstreeRepo    *self,
   return ret;
 }
 
+static void
+target_deltas_free (GPtrArray *deltas)
+{
+  g_ptr_array_free (deltas, TRUE);
+}
+
 /* ------------------------------------------------------------------------------------------
  * Below is the libsoup-invariant API; these should match
  * the stub functions in the #else clause
@@ -2196,6 +2337,8 @@ ostree_repo_pull_with_options (OstreeRepo             *self,
   g_autofree char *metalink_url_str = NULL;
   g_autoptr(GHashTable) requested_refs_to_fetch = NULL;
   g_autoptr(GHashTable) commits_to_fetch = NULL;
+  g_autoptr(GHashTable) remote_deltas_by_target = NULL;
+  g_autoptr(GHashTable) deltas_to_fetch = NULL;
   g_autofree char *remote_mode_str = NULL;
   glnx_unref_object OstreeMetalink *metalink = NULL;
   OtPullData pull_data_real = { 0, };
@@ -2229,6 +2372,7 @@ ostree_repo_pull_with_options (OstreeRepo             *self,
       (void) g_variant_lookup (options, "depth", "i", &pull_data->maxdepth);
       (void) g_variant_lookup (options, "disable-static-deltas", "b", &disable_static_deltas);
       (void) g_variant_lookup (options, "require-static-deltas", "b", &require_static_deltas);
+      (void) g_variant_lookup (options, "mirror-static-deltas", "b", &pull_data->mirror_deltas);
       (void) g_variant_lookup (options, "override-commit-ids", "^a&s", &override_commit_ids);
       (void) g_variant_lookup (options, "dry-run", "b", &pull_data->dry_run);
       (void) g_variant_lookup (options, "override-url", "&s", &url_override);
@@ -2250,6 +2394,7 @@ ostree_repo_pull_with_options (OstreeRepo             *self,
   pull_data->is_mirror = (flags & OSTREE_REPO_PULL_FLAGS_MIRROR) > 0;
   pull_data->is_commit_only = (flags & OSTREE_REPO_PULL_FLAGS_COMMIT_ONLY) > 0;
   pull_data->is_untrusted = (flags & OSTREE_REPO_PULL_FLAGS_UNTRUSTED) > 0;
+  pull_data->process_deltas = !disable_static_deltas;
 
   if (error)
     pull_data->async_error = &pull_data->cached_async_error;
@@ -2317,6 +2462,9 @@ ostree_repo_pull_with_options (OstreeRepo             *self,
   pull_data->tmpdir_dfd = pull_data->repo->tmp_dir_fd;
   requested_refs_to_fetch = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, g_free);
   commits_to_fetch = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
+  remote_deltas_by_target = g_hash_table_new_full (g_str_hash, g_str_equal,
+                                                   g_free, target_deltas_free);
+  deltas_to_fetch = g_hash_table_new_full (g_str_hash, g_str_equal, g_free, NULL);
 
   if (!ostree_repo_get_remote_option (self,
                                       remote_name_or_baseurl, "metalink",
@@ -2463,7 +2611,7 @@ ostree_repo_pull_with_options (OstreeRepo             *self,
         goto out;
       }
 
-    if (!bytes_summary && require_static_deltas)
+    if (!bytes_summary && (require_static_deltas || pull_data->mirror_deltas))
       {
         g_set_error (error, G_IO_ERROR, G_IO_ERROR_FAILED,
                      "Fetch configured to require static deltas, but no summary found");
@@ -2566,6 +2714,27 @@ ostree_repo_pull_with_options (OstreeRepo             *self,
       }
   }
 
+  /* Provide remote deltas indexed by to revision */
+  g_hash_table_iter_init (&hash_iter, pull_data->summary_deltas_checksums);
+  while (g_hash_table_iter_next (&hash_iter, &key, &value))
+    {
+      const char *delta_name = key;
+      g_autofree char *from = NULL;
+      g_autofree char *to = NULL;
+      GPtrArray *target_deltas;
+
+      _ostree_parse_delta_name (delta_name, &from, &to);
+      target_deltas = g_hash_table_lookup (remote_deltas_by_target, to);
+      if (!target_deltas)
+        {
+          target_deltas = g_ptr_array_new_with_free_func (g_free);
+          /* Transfer target_deltas ownership */
+          g_hash_table_insert (remote_deltas_by_target, g_strdup (to),
+                               target_deltas);
+        }
+      g_ptr_array_add (target_deltas, g_strdup (delta_name));
+    }
+
   if (pull_data->is_mirror && !refs_to_fetch && !configured_branches)
     {
       if (!bytes_summary)
@@ -2588,7 +2757,21 @@ ostree_repo_pull_with_options (OstreeRepo             *self,
           if (ostree_validate_checksum_string (branch, NULL))
             {
               char *key = g_strdup (branch);
+
               g_hash_table_insert (commits_to_fetch, key, key);
+              if (pull_data->mirror_deltas)
+                {
+                  GPtrArray *deltas = g_hash_table_lookup (remote_deltas_by_target, key);
+                  guint len = deltas ? deltas->len : 0;
+                  guint i;
+
+                  /* Include all deltas to this commit */
+                  for (i = 0; i < len; i++)
+                    {
+                      char *name = g_strdup (deltas->pdata[i]);
+                      g_hash_table_replace (deltas_to_fetch, name, name);
+                    }
+                }
             }
           else
             {
@@ -2657,6 +2840,25 @@ ostree_repo_pull_with_options (OstreeRepo             *self,
         }
     }
 
+  if (pull_data->mirror_deltas)
+    {
+      /* Include all deltas to the requested refs*/
+      g_hash_table_iter_init (&hash_iter, requested_refs_to_fetch);
+      while (g_hash_table_iter_next (&hash_iter, &key, &value))
+        {
+          const char *to = value;
+          GPtrArray *deltas = g_hash_table_lookup (remote_deltas_by_target, to);
+          guint len = deltas ? deltas->len : 0;
+          guint i;
+
+          for (i = 0; i < len; i++)
+            {
+              char *name = g_strdup (deltas->pdata[i]);
+              g_hash_table_replace (deltas_to_fetch, name, name);
+            }
+        }
+    }
+
   /* Create the state directory here - it's new with the commitpartial code,
    * and may not exist in older repositories.
    */
@@ -2705,11 +2907,24 @@ ostree_repo_pull_with_options (OstreeRepo             *self,
                                     &from_revision, error))
         goto out;
 
-      if (!disable_static_deltas && (from_revision == NULL || g_strcmp0 (from_revision, to_revision) != 0))
+      if ((pull_data->process_deltas || pull_data->mirror_deltas) &&
+          (from_revision == NULL || g_strcmp0 (from_revision, to_revision) != 0))
         {
+          g_autoptr(GString) delta_name = NULL;
+
           if (!request_static_delta_superblock_sync (pull_data, from_revision, to_revision,
                                                      &delta_superblock, cancellable, error))
             goto out;
+
+          /* Remove this delta from the fetch table */
+          delta_name = g_string_sized_new (2 * OSTREE_SHA256_STRING_LEN + 1);
+          if (from_revision)
+            {
+              g_string_append (delta_name, from_revision);
+              g_string_append_c (delta_name, '-');
+            }
+          g_string_append (delta_name, to_revision);
+          g_hash_table_remove (deltas_to_fetch, delta_name);
         }
           
       if (!delta_superblock)
@@ -2725,6 +2940,29 @@ ostree_repo_pull_with_options (OstreeRepo             *self,
           queue_scan_one_metadata_object (pull_data, to_revision, OSTREE_OBJECT_TYPE_COMMIT, 0);
         }
       else
+        {
+          g_debug ("processing delta superblock for %s-%s", from_revision ? from_revision : "empty", to_revision);
+          g_ptr_array_add (pull_data->static_delta_superblocks, g_variant_ref (delta_superblock));
+          if (!process_one_static_delta (pull_data, from_revision, to_revision,
+                                         delta_superblock,
+                                         cancellable, error))
+            goto out;
+        }
+    }
+
+  g_hash_table_iter_init (&hash_iter, deltas_to_fetch);
+  while (g_hash_table_iter_next (&hash_iter, &key, &value))
+    {
+      const char *delta_name = key;
+      g_autofree char *from_revision = NULL;
+      g_autofree char *to_revision = NULL;
+      GVariant *delta_superblock = NULL;
+
+      _ostree_parse_delta_name (delta_name, &from_revision, &to_revision);
+      if (!request_static_delta_superblock_sync (pull_data, from_revision, to_revision,
+                                                 &delta_superblock, cancellable, error))
+        goto out;
+      if (delta_superblock)
         {
           g_debug ("processing delta superblock for %s-%s", from_revision ? from_revision : "empty", to_revision);
           g_ptr_array_add (pull_data->static_delta_superblocks, g_variant_ref (delta_superblock));
