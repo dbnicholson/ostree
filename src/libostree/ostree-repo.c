@@ -5157,6 +5157,8 @@ ostree_repo_sign_delta (OstreeRepo     *self,
  * @error: a #GError
  *
  * Add a GPG signature to a summary file.
+ *
+ * Locking: exclusive
  */
 gboolean
 ostree_repo_add_gpg_signature_summary (OstreeRepo     *self,
@@ -5166,6 +5168,15 @@ ostree_repo_add_gpg_signature_summary (OstreeRepo     *self,
                                        GError        **error)
 {
 #ifndef OSTREE_DISABLE_GPGME
+  /* Take an exclusive lock to ensure the summary file or an existing
+   * summary.sig file doesn't change while adding a signature.
+   */
+  g_autoptr(OstreeRepoAutoLock) lock = NULL;
+  lock = _ostree_repo_auto_lock_push (self, OSTREE_REPO_LOCK_EXCLUSIVE,
+                                      cancellable, error);
+  if (!lock)
+    return FALSE;
+
   glnx_autofd int fd = -1;
   if (!glnx_openat_rdonly (self->repo_dir_fd, "summary", TRUE, &fd, error))
     return FALSE;
