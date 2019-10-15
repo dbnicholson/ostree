@@ -190,20 +190,11 @@ ostree_builtin_summary (int argc, char **argv, OstreeCommandInvocation *invocati
         }
 
       /* Regenerate and sign the conventional summary file. */
-      if (!ostree_repo_regenerate_summary (repo, additional_metadata, cancellable, error))
+      if (!ostree_repo_regenerate_metadata (repo, additional_metadata,
+                                            (const gchar **) opt_key_ids,
+                                            opt_gpg_homedir,
+                                            cancellable, error))
         return FALSE;
-
-#ifndef OSTREE_DISABLE_GPGME
-      if (opt_key_ids)
-        {
-          if (!ostree_repo_add_gpg_signature_summary (repo,
-                                                      (const gchar **) opt_key_ids,
-                                                      opt_gpg_homedir,
-                                                      cancellable,
-                                                      error))
-            return FALSE;
-        }
-#endif
     }
   else if (opt_view || opt_raw)
     {
