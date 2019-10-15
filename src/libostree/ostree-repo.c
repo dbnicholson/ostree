@@ -5726,37 +5726,13 @@ summary_add_ref_entry (OstreeRepo       *self,
   return TRUE;
 }
 
-/**
- * ostree_repo_regenerate_summary:
- * @self: Repo
- * @additional_metadata: (allow-none): A GVariant of type a{sv}, or %NULL
- * @cancellable: Cancellable
- * @error: Error
- *
- * An OSTree repository can contain a high level "summary" file that
- * describes the available branches and other metadata.
- *
- * If the timetable for making commits and updating the summary file is fairly
- * regular, setting the `ostree.summary.expires` key in @additional_metadata
- * will aid clients in working out when to check for updates.
- *
- * It is regenerated automatically after any ref is
- * added, removed, or updated if `core/auto-update-summary` is set.
- *
- * If the `core/collection-id` key is set in the configuration, it will be
- * included as %OSTREE_SUMMARY_COLLECTION_ID in the summary file. Refs that
- * have associated collection IDs will be included in the generated summary
- * file, listed under the %OSTREE_SUMMARY_COLLECTION_MAP key. Collection IDs
- * and refs in %OSTREE_SUMMARY_COLLECTION_MAP are guaranteed to be in
- * lexicographic order.
- *
- * Locking: exclusive
- */
-gboolean
-ostree_repo_regenerate_summary (OstreeRepo     *self,
-                                GVariant       *additional_metadata,
-                                GCancellable   *cancellable,
-                                GError        **error)
+static gboolean
+regenerate_metadata (OstreeRepo     *self,
+                     GVariant       *additional_metadata,
+                     const gchar   **key_ids,
+                     const gchar    *homedir,
+                     GCancellable   *cancellable,
+                     GError        **error)
 {
   /* Take an exclusive lock. This makes sure the commits and deltas don't get
    * deleted while generating the summary. It also means we can be sure refs
@@ -5944,7 +5920,80 @@ ostree_repo_regenerate_summary (OstreeRepo     *self,
   if (!ot_ensure_unlinked_at (self->repo_dir_fd, "summary.sig", error))
     return FALSE;
 
+  if (key_ids != NULL &&
+      !ostree_repo_add_gpg_signature_summary (self, key_ids, homedir, cancellable, error))
+    return FALSE;
+
   return TRUE;
+}
+
+/**
+ * ostree_repo_regenerate_summary:
+ * @self: Repo
+ * @additional_metadata: (allow-none): A GVariant of type a{sv}, or %NULL
+ * @cancellable: Cancellable
+ * @error: Error
+ *
+ * An OSTree repository can contain a high level "summary" file that
+ * describes the available branches and other metadata.
+ *
+ * If the timetable for making commits and updating the summary file is fairly
+ * regular, setting the `ostree.summary.expires` key in @additional_metadata
+ * will aid clients in working out when to check for updates.
+ *
+ * It is regenerated automatically after any ref is
+ * added, removed, or updated if `core/auto-update-summary` is set.
+ *
+ * If the `core/collection-id` key is set in the configuration, it will be
+ * included as %OSTREE_SUMMARY_COLLECTION_ID in the summary file. Refs that
+ * have associated collection IDs will be included in the generated summary
+ * file, listed under the %OSTREE_SUMMARY_COLLECTION_MAP key. Collection IDs
+ * and refs in %OSTREE_SUMMARY_COLLECTION_MAP are guaranteed to be in
+ * lexicographic order.
+ *
+ * Locking: exclusive
+ */
+gboolean
+ostree_repo_regenerate_summary (OstreeRepo     *self,
+                                GVariant       *additional_metadata,
+                                GCancellable   *cancellable,
+                                GError        **error)
+{
+  return regenerate_metadata (self, additional_metadata, NULL, NULL,
+                              cancellable, error);
+}
+
+/**
+ * ostree_repo_regenerate_metadata:
+ * @self: Repo
+ * @additional_metadata: (allow-none): A GVariant of type a{sv}, or %NULL
+ * @key_ids: (array zero-terminated=1) (element-type utf8): NULL-terminated array of GPG keys.
+ * @homedir: (allow-none): GPG home directory, or %NULL
+ * @cancellable: Cancellable
+ * @error: Error
+ *
+ * Regenerate the OSTree repository metadata used by clients to describe
+ * available branches and other metadata. If @key_ids is set, the metadata will
+ * also be GPG signed.
+ *
+ * The repository metadata currently consists of the `summary` file. See
+ * ostree_repo_regenerate_summary() and %OSTREE_SUMMARY_GVARIANT_FORMAT for
+ * additional details on its contents.
+ *
+ * Locking: exclusive
+ *
+ * Since: 2019.7
+ */
+gboolean
+ostree_repo_regenerate_metadata (OstreeRepo     *self,
+                                 GVariant       *additional_metadata,
+                                 const gchar   **key_ids,
+                                 const gchar    *homedir,
+                                 GCancellable   *cancellable,
+                                 GError        **error)
+{
+  return regenerate_metadata (self, additional_metadata, key_ids, homedir,
+                              cancellable, error);
 }
 
 /* Regenerate the summary if `core/auto-update-summary` is set. We default to FALSE for
