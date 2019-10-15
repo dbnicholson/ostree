@@ -5729,6 +5729,7 @@ summary_add_ref_entry (OstreeRepo       *self,
 static gboolean
 regenerate_metadata (OstreeRepo     *self,
                      GVariant       *additional_metadata,
+                     gboolean        do_metadata_commit,
                      const gchar   **key_ids,
                      const gchar    *homedir,
                      GCancellable   *cancellable,
@@ -5746,11 +5747,93 @@ regenerate_metadata (OstreeRepo     *self,
   if (!lock)
     return FALSE;
 
+  const gchar *main_collection_id = ostree_repo_get_collection_id (self);
+
+  /* Only create a metadata commit when the repo has a collection ID. */
+  if (do_metadata_commit)
+    do_metadata_commit = (main_collection_id != NULL);
+
+  /* Write out a new metadata commit for the repository. */
+  if (do_metadata_commit)
+    {
+      OstreeCollectionRef collection_ref = { (gchar *) main_collection_id,
+                                             (gchar *) OSTREE_REPO_METADATA_REF };
+      g_autofree char *old_ostree_metadata_checksum = NULL;
+      if (!ostree_repo_resolve_rev (self, OSTREE_REPO_METADATA_REF,
+                                    TRUE, &old_ostree_metadata_checksum, error))
+        return FALSE;
+
+      /* Add bindings to the metadata. */
+      g_autoptr(GVariantDict) new_summary_commit_dict = g_variant_dict_new (additional_metadata);
+      g_variant_dict_insert (new_summary_commit_dict, OSTREE_COMMIT_META_KEY_COLLECTION_BINDING,
+                             "s", collection_ref.collection_id);
+      g_variant_dict_insert_value (new_summary_commit_dict, OSTREE_COMMIT_META_KEY_REF_BINDING,
+                                   g_variant_new_strv ((const gchar * const *) &collection_ref.ref_name, 1));
+      g_autoptr(GVariant) new_summary_commit = g_variant_dict_end (new_summary_commit_dict);
+
+      if (!ostree_repo_prepare_transaction (self, NULL, cancellable, error))
+        return FALSE;
+
+      /* Disable automatic summary updating since we're already doing it */
+      self->txn.disable_auto_summary = TRUE;
+
+      /* Set up an empty mtree. */
+      g_autoptr(OstreeMutableTree) mtree = ostree_mutable_tree_new ();
+
+      glnx_unref_object GFileInfo *fi = g_file_info_new ();
+      g_file_info_set_attribute_uint32 (fi, "unix::uid", 0);
+      g_file_info_set_attribute_uint32 (fi, "unix::gid", 0);
+      g_file_info_set_attribute_uint32 (fi, "unix::mode", (0755 | S_IFDIR));
+
+      g_autoptr(GVariant) dirmeta = ostree_create_directory_metadata (fi, NULL /* xattrs */);
+
+      g_autofree guchar *csum_raw = NULL;
+      if (!ostree_repo_write_metadata (self, OSTREE_OBJECT_TYPE_DIR_META, NULL,
+                                       dirmeta, &csum_raw, cancellable, error))
+        return FALSE;
+
+      g_autofree char *csum = ostree_checksum_from_bytes (csum_raw);
+      ostree_mutable_tree_set_metadata_checksum (mtree, csum);
+
+      g_autoptr(OstreeRepoFile) repo_file = NULL;
+      if (!ostree_repo_write_mtree (self, mtree, (GFile **) &repo_file, NULL, error))
+        return FALSE;
+
+      g_autofree gchar *new_ostree_metadata_checksum = NULL;
+      if (!ostree_repo_write_commit (self, old_ostree_metadata_checksum,
+                                     NULL  /* subject */, NULL  /* body */,
+                                     new_summary_commit, repo_file,
+                                     &new_ostree_metadata_checksum,
+                                     NULL, error))
+        return FALSE;
+
+      if (key_ids != NULL)
+        {
+          for (const char * const *iter = (const char * const *) key_ids;
+               iter != NULL && *iter != NULL; iter++)
+            {
+              const char *key_id = *iter;
+
+              if (!ostree_repo_sign_commit (self,
+                                            new_ostree_metadata_checksum,
+                                            key_id,
+                                            homedir,
+                                            cancellable,
+                                            error))
+                return FALSE;
+            }
+        }
+
+      ostree_repo_transaction_set_collection_ref (self, &collection_ref,
+                                                  new_ostree_metadata_checksum);
+
+      if (!ostree_repo_commit_transaction (self, NULL, cancellable, error))
+        return FALSE;
+    }
+
   g_auto(GVariantDict) additional_metadata_builder = OT_VARIANT_BUILDER_INITIALIZER;
   g_variant_dict_init (&additional_metadata_builder, additional_metadata);
   g_autoptr(GVariantBuilder) refs_builder = g_variant_builder_new (G_VARIANT_TYPE ("a(s(taya{sv}))"));
-
-  const gchar *main_collection_id = ostree_repo_get_collection_id (self);
 
   {
     if (main_collection_id == NULL)
@@ -5959,7 +6042,7 @@ ostree_repo_regenerate_summary (OstreeRepo     *self,
                                 GCancellable   *cancellable,
                                 GError        **error)
 {
-  return regenerate_metadata (self, additional_metadata, NULL, NULL,
+  return regenerate_metadata (self, additional_metadata, FALSE, NULL, NULL,
                               cancellable, error);
 }
 
@@ -5980,6 +6063,9 @@ ostree_repo_regenerate_summary (OstreeRepo     *self,
  * ostree_repo_regenerate_summary() and %OSTREE_SUMMARY_GVARIANT_FORMAT for
  * additional details on its contents.
  *
+ * Additionally, if the `core/collection-id` key is set in the configuration, a
+ * %OSTREE_REPO_METADATA_REF commit will be created.
+ *
  * Locking: exclusive
  *
  * Since: 2019.7
@@ -5992,7 +6078,7 @@ ostree_repo_regenerate_metadata (OstreeRepo     *self,
                                  GCancellable   *cancellable,
                                  GError        **error)
 {
-  return regenerate_metadata (self, additional_metadata, key_ids, homedir,
+  return regenerate_metadata (self, additional_metadata, TRUE, key_ids, homedir,
                               cancellable, error);
 }
 
