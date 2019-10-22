@@ -470,6 +470,160 @@ add_size_index_to_metadata (OstreeRepo        *self,
 }
 
 static gboolean
+read_sizes_entry (GVariant                     *entry,
+                  OstreeContentSizeCacheEntry  *sizes,
+                  char                         *csum,
+                  GError                      **error)
+{
+  gsize entry_size = g_variant_get_size (entry);
+  g_return_val_if_fail (entry_size >= 34, FALSE);
+
+  const guchar *buffer = g_variant_get_data (entry);
+  if (buffer == NULL)
+    return glnx_throw (error, "Could not read ostree.sizes metadata entry");
+
+  ostree_checksum_inplace_from_bytes (buffer, csum);
+  buffer += 32;
+  entry_size -= 32;
+
+  gsize bytes_read = 0;
+  guint64 archived = 0;
+  if (!_ostree_read_varuint64 (buffer, entry_size, &archived, &bytes_read))
+    return glnx_throw (error, "Unexpected EOF reading ostree.sizes varint");
+  sizes->archived = archived;
+  buffer += bytes_read;
+  entry_size -= bytes_read;
+
+  guint64 unpacked = 0;
+  if (!_ostree_read_varuint64 (buffer, entry_size, &unpacked, &bytes_read))
+    return glnx_throw (error, "Unexpected EOF reading ostree.sizes varint");
+  sizes->unpacked = unpacked;
+  buffer += bytes_read;
+  entry_size -= bytes_read;
+
+  /* On newer commits, an additional byte is used for the object type. */
+  if (entry_size > 0)
+    {
+      OstreeObjectType objtype = *buffer;
+      if (objtype < OSTREE_OBJECT_TYPE_FILE || objtype > OSTREE_OBJECT_TYPE_LAST)
+        return glnx_throw (error, "Unexpected ostree.sizes object type %u",
+                           objtype);
+      sizes->objtype = objtype;
+    }
+  else
+    {
+      /* Assume the object is a file. */
+      sizes->objtype = OSTREE_OBJECT_TYPE_FILE;
+    }
+
+  return TRUE;
+}
+
+/**
+ * ostree_repo_get_commit_sizes
+ * @self: Self
+ * @rev: Commit checksum
+ * @new_archived: (out) (optional): number of archived bytes for the commit
+ *                missing from the repository, or %NULL
+ * @new_unpacked: (out) (optional): number of unpacked bytes for the commit
+ *                missing from the repository, or %NULL
+ * @new_objects: (out) (optional): number of objects for the commit missing
+ *               from the repository, or %NULL
+ * @archived: (out) (optional): number of archived bytes for the commit in the
+ *            repository, or %NULL
+ * @unpacked: (out) (optional): number of unpacked bytes for the commit in the
+ *            repository, or %NULL
+ * @objects: (out) (optional): number of objects for the commit in the
+ *           repository, or %NULL
+ * @cancellable: a #GCancellable
+ * @error: a #GError
+ *
+ * Reads the size data for the commit stored in the %ostree.sizes key in
+ * the commit metadata. If this data is not available, %FALSE is
+ * returned and @error is set to %G_IO_ERROR_NOT_FOUND.
+ *
+ * Returns: %TRUE on success, %FALSE on failure
+ *
+ * Since: 2019.5
+ */
+gboolean
+ostree_repo_get_commit_sizes (OstreeRepo    *self,
+                              const char    *rev,
+                              gint64        *new_archived,
+                              gint64        *new_unpacked,
+                              gsize         *new_objects,
+                              gint64        *archived,
+                              gint64        *unpacked,
+                              gsize         *objects,
+                              GCancellable  *cancellable,
+                              GError       **error)
+{
+  g_autoptr(GVariant) commit = NULL;
+  if (!ostree_repo_load_variant (self, OSTREE_OBJECT_TYPE_COMMIT, rev,
+                                 &commit, error))
+    {
+      g_prefix_error (error, "Failed to read commit: ");
+      return FALSE;
+    }
+
+  g_autoptr(GVariant) metadata = g_variant_get_child_value (commit, 0);
+  g_autoptr(GVariant) sizes =
+    g_variant_lookup_value (metadata, "ostree.sizes",
+                            G_VARIANT_TYPE ("a" _OSTREE_OBJECT_SIZES_ENTRY_SIGNATURE));
+  if (sizes == NULL)
+    {
+      g_set_error (error, G_IO_ERROR, G_IO_ERROR_NOT_FOUND,
+                   "No metadata key ostree.sizes in commit %s", rev);
+      return FALSE;
+    }
+
+  GVariantIter obj_iter;
+  g_autoptr(GVariant) object = NULL;
+  guint64 n_archived = 0;
+  guint64 n_unpacked = 0;
+  gsize n_objects = 0;
+  guint64 t_archived = 0;
+  guint64 t_unpacked = 0;
+  gsize t_objects = 0;
+  g_variant_iter_init (&obj_iter, sizes);
+  while ((object = g_variant_iter_next_value (&obj_iter)))
+    {
+      OstreeContentSizeCacheEntry entry = { 0, };
+      char csum[OSTREE_SHA256_STRING_LEN + 1];
+
+      if (!read_sizes_entry (object, &entry, csum, error))
+        return FALSE;
+      g_clear_pointer (&object, g_variant_unref);
+
+      t_archived += entry.archived;
+      t_unpacked += entry.unpacked;
+      t_objects++;
+
+      gboolean exists;
+      if (!ostree_repo_has_object (self, entry.objtype, csum, &exists,
+                                   cancellable, error))
+        return FALSE;
+
+      /* Object not in local repo */
+      if (!exists)
+        {
+          n_archived += entry.archived;
+          n_unpacked += entry.unpacked;
+          n_objects++;
+        }
+    }
+
+  if (new_archived) *new_archived = n_archived;
+  if (new_unpacked) *new_unpacked = n_unpacked;
+  if (new_objects) *new_objects = n_objects;
+  if (archived) *archived = t_archived;
+  if (unpacked) *unpacked = t_unpacked;
+  if (objects) *objects = t_objects;
+
+  return TRUE;
+}
+
+static gboolean
 throw_min_free_space_error (OstreeRepo  *self,
                             guint64      bytes_required,
                             GError     **error)

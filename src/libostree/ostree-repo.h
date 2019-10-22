@@ -996,6 +996,18 @@ gboolean       ostree_repo_read_commit (OstreeRepo    *self,
                                         GCancellable  *cancellable,
                                         GError        **error);
 
+_OSTREE_PUBLIC
+gboolean       ostree_repo_get_commit_sizes (OstreeRepo    *self,
+                                             const char    *rev,
+                                             gint64        *new_archived,
+                                             gint64        *new_unpacked,
+                                             gsize         *new_objects,
+                                             gint64        *archived,
+                                             gint64        *unpacked,
+                                             gsize         *objects,
+                                             GCancellable  *cancellable,
+                                             GError       **error);
+
 /**
  * OstreeRepoListObjectsFlags:
  * @OSTREE_REPO_LIST_OBJECTS_LOOSE: List only loose (plain file) objects

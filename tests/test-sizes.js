@@ -121,6 +121,29 @@ function validateSizes(repo, commit, expectedObjects) {
                             " does not match expected " + expectedUncompressedSize);
         }
     }
+
+    // Validate ostree_repo_get_commit_sizes(). All the objects are in
+    // the repo, so new should be 0.
+    let expectedArchived = 0;
+    let expectedUnpacked = 0;
+    for (let entry in expectedObjects) {
+        let expectedSizes = expectedObjects[entry];
+        expectedArchived += expectedSizes[0];
+        expectedUnpacked += expectedSizes[1];
+    }
+    let result = repo.get_commit_sizes(commit, null);
+    print("new archived = " + result[1]);
+    print("new unpacked = " + result[2]);
+    print("new objects = " + result[3]);
+    print("total archived = " + result[4]);
+    print("total unpacked = " + result[5]);
+    print("total objects = " + result[6]);
+    assertEquals(result[1], 0);
+    assertEquals(result[2], 0);
+    assertEquals(result[3], 0);
+    assertEquals(result[4], expectedArchived);
+    assertEquals(result[5], expectedUnpacked);
+    assertEquals(result[6], expectedNObjects);
 }
 
 print('1..3')

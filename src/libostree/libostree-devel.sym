@@ -19,6 +19,8 @@
 
 /* Add new symbols here.  Release commits should copy this section into -released.sym. */
 LIBOSTREE_2019.5 {
+global:
+  ostree_repo_get_commit_sizes;
 } LIBOSTREE_2019.4;
 
 /* Stub section for the stable release *after* this development one; don't
