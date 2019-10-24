@@ -33,6 +33,7 @@ static gboolean opt_print_related;
 static char* opt_print_variant_type;
 static char* opt_print_metadata_key;
 static char* opt_print_detached_metadata_key;
+static gboolean opt_print_sizes;
 static gboolean opt_raw;
 static gboolean opt_no_byteswap;
 static char *opt_gpg_homedir;
@@ -48,6 +49,7 @@ static GOptionEntry options[] = {
   { "print-variant-type", 0, 0, G_OPTION_ARG_STRING, &opt_print_variant_type, "Memory map OBJECT (in this case a filename) to the GVariant type string", "TYPE" },
   { "print-metadata-key", 0, 0, G_OPTION_ARG_STRING, &opt_print_metadata_key, "Print string value of metadata key", "KEY" },
   { "print-detached-metadata-key", 0, 0, G_OPTION_ARG_STRING, &opt_print_detached_metadata_key, "Print string value of detached metadata key", "KEY" },
+  { "print-sizes", 0, 0, G_OPTION_ARG_NONE, &opt_print_sizes, "Show the commit size metadata", NULL },
   { "raw", 0, 0, G_OPTION_ARG_NONE, &opt_raw, "Show raw variant data" },
   { "no-byteswap", 'B', 0, G_OPTION_ARG_NONE, &opt_no_byteswap, "Do not automatically convert variant data from big endian" },
   { "gpg-homedir", 0, 0, G_OPTION_ARG_FILENAME, &opt_gpg_homedir, "GPG Homedir to use when looking for keyrings", "HOMEDIR"},
@@ -143,6 +145,38 @@ do_print_metadata_key (OstreeRepo     *repo,
     }
   else
     ot_dump_variant (value);
+  return TRUE;
+}
+
+static gboolean
+do_print_sizes (OstreeRepo  *repo,
+                const char  *rev,
+                GError     **error)
+{
+  gint64 new_archived = 0;
+  gint64 new_unpacked = 0;
+  gsize new_objects = 0;
+  gint64 archived = 0;
+  gint64 unpacked = 0;
+  gsize objects = 0;
+
+  if (!ostree_repo_get_commit_sizes (repo, rev,
+                                     &new_archived, &new_unpacked, &new_objects,
+                                     &archived, &unpacked, &objects,
+                                     NULL, error))
+    return FALSE;
+
+  g_autofree char *new_archived_str = g_format_size (new_archived);
+  g_autofree char *archived_str = g_format_size (archived);
+  g_autofree char *new_unpacked_str = g_format_size (new_unpacked);
+  g_autofree char *unpacked_str = g_format_size (unpacked);
+  g_print ("Compressed size (needed/total): %s/%s\n"
+           "Unpacked size (needed/total): %s/%s\n"
+           "Number of objects (needed/total): %" G_GSIZE_FORMAT "/%" G_GSIZE_FORMAT "\n",
+           new_archived_str, archived_str,
+           new_unpacked_str, unpacked_str,
+           new_objects, objects);
+
   return TRUE;
 }
 
@@ -277,6 +311,14 @@ ostree_builtin_show (int argc, char **argv, OstreeCommandInvocation *invocation,
   else if (opt_print_variant_type)
     {
       if (!do_print_variant_generic (G_VARIANT_TYPE (opt_print_variant_type), rev, error))
+        return FALSE;
+    }
+  else if (opt_print_sizes)
+    {
+      if (!ostree_repo_resolve_rev (repo, rev, FALSE, &resolved_rev, error))
+        return FALSE;
+
+      if (!do_print_sizes (repo, resolved_rev, error))
         return FALSE;
     }
   else
