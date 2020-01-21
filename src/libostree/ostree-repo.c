@@ -6009,8 +6009,17 @@ regenerate_metadata (OstreeRepo     *self,
     g_variant_ref_sink (summary);
   }
 
+  /* Create the summary and signature in temporary directory so that the
+   * summary isn't published without a matching signature.
+   */
+  g_auto(GLnxTmpDir) summary_tmpdir = { 0, };
+  if (!glnx_mkdtempat (self->tmp_dir_fd, "summary-XXXXXX", 0777,
+                       &summary_tmpdir, error))
+    return FALSE;
+  g_debug ("Using summary tmpdir %s", summary_tmpdir.path);
+
   if (!_ostree_repo_file_replace_contents (self,
-                                           self->repo_dir_fd,
+                                           summary_tmpdir.fd,
                                            "summary",
                                            g_variant_get_data (summary),
                                            g_variant_get_size (summary),
@@ -6018,12 +6027,39 @@ regenerate_metadata (OstreeRepo     *self,
                                            error))
     return FALSE;
 
-  if (!ot_ensure_unlinked_at (self->repo_dir_fd, "summary.sig", error))
+  if (key_ids != NULL &&
+      !internal_repo_add_gpg_signature_summary (self, summary_tmpdir.fd,
+                                                key_ids, homedir,
+                                                cancellable, error))
     return FALSE;
 
-  if (key_ids != NULL &&
-      !ostree_repo_add_gpg_signature_summary (self, key_ids, homedir, cancellable, error))
-    return FALSE;
+  /* Rename them into place */
+  if (renameat (summary_tmpdir.fd, "summary",
+                self->repo_dir_fd, "summary") == -1)
+    return glnx_throw_errno_prefix (error, "%s",
+                                    "Unable to rename summary file");
+
+  if (key_ids != NULL)
+    {
+      if (renameat (summary_tmpdir.fd, "summary.sig",
+                    self->repo_dir_fd, "summary.sig") == -1)
+        {
+          /* Delete an existing signature since it no longer corresponds
+           * to the published summary.
+           */
+          g_debug ("Deleting existing unmatched summary.sig file");
+          (void) ot_ensure_unlinked_at (self->repo_dir_fd, "summary.sig", NULL);
+
+          return glnx_throw_errno_prefix (error, "%s",
+                                          "Unable to rename summary signature file");
+        }
+    }
+  else
+    {
+      g_debug ("Deleting existing unmatched summary.sig file");
+      if (!ot_ensure_unlinked_at (self->repo_dir_fd, "summary.sig", error))
+        return glnx_prefix_error (error, "Unable to delete summary signature file: ");
+    }
 
   return TRUE;
 }
