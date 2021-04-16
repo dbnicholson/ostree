@@ -172,27 +172,38 @@ G_DEFINE_TYPE (OstreeRepo, ostree_repo, G_TYPE_OBJECT)
 /* Repository locking
  *
  * To guard against objects being deleted (e.g., prune) while they're in
- * use by another operation is accessing them (e.g., commit), the
+ * use by another operation that is accessing them (e.g., commit), the
  * repository must be locked by concurrent writers.
  *
- * The locking is implemented by maintaining a thread local table of
- * lock stacks per repository. This allows thread safe locking since
- * each thread maintains its own lock stack. See the OstreeRepoLock type
- * below.
+ * The repository locking has several important features:
  *
- * The actual locking is done using either open file descriptor locks or
- * flock locks. This allows the locking to work with concurrent
- * processes. The lock file is held on the ".lock" file within the
- * repository.
+ * * There are 2 states - shared and exclusive. Multiple users can hold
+ *   a shared lock concurrently while only one user can hold an
+ *   exclusive lock.
+ *
+ * * The lock can be taken recursively so long as each acquisition is
+ *   paired with a matching release. The recursion is also latched to
+ *   the strongest state. Once an exclusive lock has been taken, it will
+ *   remain exclusive until all exclusive states have been released.
+ *
+ * * It is both multiprocess- and multithread-safe. Threads that share
+ *   an OstreeRepo use the lock cooperatively while processes and
+ *   threads using separate OstreeRepo structures will block when
+ *   acquiring incompatible lock states.
+ *
+ * The actual locking is implemented using either open file descriptor
+ * locks or flock locks. This allows the locking to work with concurrent
+ * processes or concurrent threads using a separate OstreeRepo. The lock
+ * file is held on the ".lock" file within the repository.
  *
  * The intended usage is to take a shared lock when writing objects or
  * reading objects in critical sections. Exclusive locks are taken when
  * deleting objects.
  *
- * To allow fine grained locking within libostree, the lock is
- * maintained as a stack. The core APIs then push or pop from the stack.
- * When pushing or popping a lock state identical to the existing or
- * next state, the stack is simply updated. Only when upgrading or
+ * To allow fine grained locking within libostree, the lock is treated
+ * as a stack. The core APIs then push or pop from the stack. When
+ * pushing or popping a lock state identical to the existing or next
+ * state, the lock state is simply updated. Only when upgrading or
  * downgrading the lock (changing to/from unlocked, pushing exclusive on
  * shared or popping exclusive to shared) are actual locking operations
  * performed.
@@ -210,12 +221,17 @@ free_repo_lock_table (gpointer data)
     }
 }
 
+/* When pushing lock states, it's clearly known what the current and next lock
+ * state are. However, when popping lock states we need to what the lock state
+ * that was pushed by the current thread was so we know what state to drop. A
+ * stack is kept per thread for this.
+ *
+ * In order to allow a single thread to have multiple OstreeRepos, a hash
+ * table with the OstreeRepo as key and GPtrArray as value is maintained in
+ * thread local storage via GPrivate. The array represents that thread's lock
+ * stack for a particular OstreeRepo.
+ */
 static GPrivate repo_lock_table = G_PRIVATE_INIT (free_repo_lock_table);
-
-typedef struct {
-  int fd;
-  GQueue stack;
-} OstreeRepoLock;
 
 typedef struct {
   guint len;
@@ -223,47 +239,41 @@ typedef struct {
   const char *name;
 } OstreeRepoLockInfo;
 
-static void
-repo_lock_info (OstreeRepoLock *lock, OstreeRepoLockInfo *out_info)
+static const char *
+lock_state_name (int state)
 {
-  g_assert (lock != NULL);
-  g_assert (out_info != NULL);
-
-  OstreeRepoLockInfo info;
-  info.len = g_queue_get_length (&lock->stack);
-  if (info.len == 0)
+  switch (state)
     {
-      info.state = LOCK_UN;
-      info.name = "unlocked";
+    case LOCK_EX:
+      return "exclusive";
+    case LOCK_SH:
+      return "shared";
+    case LOCK_UN:
+      return "unlocked";
+    default:
+      g_assert_not_reached ();
     }
-  else
-    {
-      info.state = GPOINTER_TO_INT (g_queue_peek_head (&lock->stack));
-      info.name = (info.state == LOCK_EX) ? "exclusive" : "shared";
-    }
-
-  *out_info = info;
 }
 
 static void
-free_repo_lock (gpointer data)
+repo_lock_info (OstreeRepo *self, GMutexLocker *locker,
+                OstreeRepoLockInfo *out_info)
 {
-  OstreeRepoLock *lock = data;
+  g_assert (self != NULL);
+  g_assert (locker != NULL);
+  g_assert (out_info != NULL);
 
-  if (lock != NULL)
-    {
-      OstreeRepoLockInfo info;
-      repo_lock_info (lock, &info);
+  OstreeRepoLockInfo info;
+  info.len = self->lock.shared + self->lock.exclusive;
+  if (info.len == 0)
+      info.state = LOCK_UN;
+  else if (self->lock.exclusive > 0)
+      info.state = LOCK_EX;
+  else
+      info.state = LOCK_SH;
+  info.name = lock_state_name (info.state);
 
-      g_debug ("Free lock: state=%s, depth=%u", info.name, info.len);
-      g_queue_clear (&lock->stack);
-      if (lock->fd >= 0)
-        {
-          g_debug ("Closing repo lock file");
-          (void) close (lock->fd);
-        }
-      g_free (lock);
-    }
+  *out_info = info;
 }
 
 /* Wrapper to handle flock vs OFD locking based on GLnxLockFile */
@@ -347,50 +357,67 @@ push_repo_lock (OstreeRepo          *self,
     {
       g_debug ("Creating repo lock table");
       lock_table = g_hash_table_new_full (NULL, NULL, NULL,
-                                          (GDestroyNotify)free_repo_lock);
+                                          (GDestroyNotify)g_ptr_array_unref);
       g_private_set (&repo_lock_table, lock_table);
     }
 
-  OstreeRepoLock *lock = g_hash_table_lookup (lock_table, self);
-  if (lock == NULL)
+  GPtrArray *stack = g_hash_table_lookup (lock_table, self);
+  if (stack == NULL)
     {
-      lock = g_new0 (OstreeRepoLock, 1);
-      g_queue_init (&lock->stack);
+      stack = g_ptr_array_new ();
+      g_hash_table_insert (lock_table, self, stack);
+    }
+
+  g_autoptr(GMutexLocker) locker = g_mutex_locker_new (&self->lock.mutex);
+
+  if (self->lock.fd == -1)
+    {
       g_debug ("Opening repo lock file");
-      lock->fd = TEMP_FAILURE_RETRY (openat (self->repo_dir_fd, ".lock",
-                                             O_CREAT | O_RDWR | O_CLOEXEC,
-                                             DEFAULT_REGFILE_MODE));
-      if (lock->fd < 0)
-        {
-          free_repo_lock (lock);
-          return glnx_throw_errno_prefix (error,
-                                          "Opening lock file %s/.lock failed",
-                                          gs_file_get_path_cached (self->repodir));
-        }
-      g_hash_table_insert (lock_table, self, lock);
+      self->lock.fd = TEMP_FAILURE_RETRY (openat (self->repo_dir_fd, ".lock",
+                                                  O_CREAT | O_RDWR | O_CLOEXEC,
+                                                  DEFAULT_REGFILE_MODE));
+      if (self->lock.fd < 0)
+        return glnx_throw_errno_prefix (error,
+                                        "Opening lock file %s/.lock failed",
+                                        gs_file_get_path_cached (self->repodir));
     }
 
   OstreeRepoLockInfo info;
-  repo_lock_info (lock, &info);
+  repo_lock_info (self, locker, &info);
   g_debug ("Push lock: state=%s, depth=%u", info.name, info.len);
 
-  if (info.state == LOCK_EX)
+  int next_state;
+  guint *counter;
+  if (flags & LOCK_EX)
     {
-      g_debug ("Repo already locked exclusively, extending stack");
-      g_queue_push_head (&lock->stack, GINT_TO_POINTER (LOCK_EX));
+      next_state = LOCK_EX;
+      counter = &(self->lock.exclusive);
     }
   else
     {
-      int next_state = (flags & LOCK_EX) ? LOCK_EX : LOCK_SH;
-      const char *next_state_name = (flags & LOCK_EX) ? "exclusive" : "shared";
+      next_state = LOCK_SH;
+      counter = &(self->lock.shared);
+    }
 
+  /* Make sure the counter won't overflow */
+  g_assert_cmpuint (*counter, <, G_MAXUINT);
+
+  if (info.state == LOCK_EX || info.state == next_state)
+    {
+      g_debug ("Repo already locked %s, extending stack", info.name);
+    }
+  else
+    {
+      const char *next_state_name = lock_state_name (next_state);
       g_debug ("Locking repo %s", next_state_name);
-      if (!do_repo_lock (lock->fd, flags))
+      if (!do_repo_lock (self->lock.fd, flags))
         return glnx_throw_errno_prefix (error, "Locking repo %s failed",
                                         next_state_name);
-
-      g_queue_push_head (&lock->stack, GINT_TO_POINTER (next_state));
     }
+
+  /* Update the state */
+  (*counter)++;
+  g_ptr_array_add (stack, GINT_TO_POINTER (next_state));
 
   return TRUE;
 }
@@ -405,41 +432,62 @@ pop_repo_lock (OstreeRepo  *self,
   GHashTable *lock_table = g_private_get (&repo_lock_table);
   g_assert_nonnull (lock_table);
 
-  OstreeRepoLock *lock = g_hash_table_lookup (lock_table, self);
-  g_assert_nonnull (lock);
-  g_assert_cmpint (lock->fd, !=, -1);
+  GPtrArray *stack = g_hash_table_lookup (lock_table, self);
+  g_assert_nonnull (stack);
+  g_assert_cmpuint (stack->len, >, 0);
+
+  g_autoptr(GMutexLocker) locker = g_mutex_locker_new (&self->lock.mutex);
+  g_assert_cmpint (self->lock.fd, !=, -1);
 
   OstreeRepoLockInfo info;
-  repo_lock_info (lock, &info);
+  repo_lock_info (self, locker, &info);
   g_assert_cmpint (info.len, >, 0);
-
+  g_assert_cmpint (info.state, !=, LOCK_UN);
   g_debug ("Pop lock: state=%s, depth=%u", info.name, info.len);
-  if (info.len > 1)
-    {
-      int next_state = GPOINTER_TO_INT (g_queue_peek_nth (&lock->stack, 1));
 
-      /* Drop back to the previous lock state if it differs */
-      if (next_state != info.state)
-        {
-          /* We should never drop from shared to exclusive */
-          g_assert_cmpint (next_state, ==, LOCK_SH);
-          g_debug ("Returning lock state to shared");
-          if (!do_repo_lock (lock->fd, next_state | flags))
-            return glnx_throw_errno_prefix (error,
-                                            "Setting repo lock to shared failed");
-        }
-      else
-        g_debug ("Maintaining lock state as %s", info.name);
+  int state_to_drop = GPOINTER_TO_INT (stack->pdata[stack->len - 1]);
+  g_assert (state_to_drop == LOCK_EX || state_to_drop == LOCK_SH);
+  guint *counter;
+  if (state_to_drop == LOCK_EX)
+    counter = &(self->lock.exclusive);
+  else
+    counter = &(self->lock.shared);
+  g_assert_cmpuint (*counter, >, 0);
+
+  int next_state;
+  if (info.len == 1)
+    {
+      /* Lock counters will be empty, unlock */
+      next_state = LOCK_UN;
+    }
+  else if (state_to_drop == LOCK_EX)
+    next_state = (self->lock.exclusive > 1) ? LOCK_EX : LOCK_SH;
+  else
+    next_state = (self->lock.exclusive > 0) ? LOCK_EX : LOCK_SH;
+
+  if (next_state == LOCK_UN)
+    {
+      g_debug ("Unlocking repo");
+      if (!do_repo_unlock (self->lock.fd, flags))
+        return glnx_throw_errno_prefix (error, "Unlocking repo failed");
+    }
+  else if (info.state == next_state)
+    {
+      g_debug ("Maintaining lock state as %s", info.name);
     }
   else
     {
-      /* Lock stack will be empty, unlock */
-      g_debug ("Unlocking repo");
-      if (!do_repo_unlock (lock->fd, flags))
-        return glnx_throw_errno_prefix (error, "Unlocking repo failed");
+      /* We should never drop from shared to exclusive */
+      g_assert_cmpint (next_state, ==, LOCK_SH);
+      g_debug ("Returning lock state to shared");
+      if (!do_repo_lock (self->lock.fd, next_state | flags))
+        return glnx_throw_errno_prefix (error,
+                                        "Setting repo lock to shared failed");
     }
 
-  g_queue_pop_head (&lock->stack);
+  /* Update the state */
+  (*counter)--;
+  g_ptr_array_remove_index (stack, stack->len - 1);
 
   return TRUE;
 }
@@ -1065,6 +1113,11 @@ ostree_repo_finalize (GObject *object)
         g_private_replace (&repo_lock_table, NULL);
     }
 
+  g_mutex_lock (&self->lock.mutex);
+  glnx_close_fd (&self->lock.fd);
+  g_mutex_unlock (&self->lock.mutex);
+  g_mutex_clear (&self->lock.mutex);
+
   G_OBJECT_CLASS (ostree_repo_parent_class)->finalize (object);
 }
 
@@ -1225,6 +1278,7 @@ ostree_repo_init (OstreeRepo *self)
   self->test_error_flags = g_parse_debug_string (g_getenv ("OSTREE_REPO_TEST_ERROR"),
                                                  test_error_keys, G_N_ELEMENTS (test_error_keys));
 
+  g_mutex_init (&self->lock.mutex);
   g_mutex_init (&self->cache_lock);
   g_mutex_init (&self->txn_lock);
 
@@ -1238,6 +1292,7 @@ ostree_repo_init (OstreeRepo *self)
   self->tmp_dir_fd = -1;
   self->objects_dir_fd = -1;
   self->uncompressed_objects_dir_fd = -1;
+  self->lock.fd = -1;
   self->sysroot_kind = OSTREE_REPO_SYSROOT_KIND_UNKNOWN;
 }
 
