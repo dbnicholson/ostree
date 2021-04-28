@@ -403,15 +403,15 @@ pop_repo_lock (OstreeRepo  *self,
   int flags = blocking ? 0 : LOCK_NB;
 
   GHashTable *lock_table = g_private_get (&repo_lock_table);
-  g_return_val_if_fail (lock_table != NULL, FALSE);
+  g_assert_nonnull (lock_table);
 
   OstreeRepoLock *lock = g_hash_table_lookup (lock_table, self);
-  g_return_val_if_fail (lock != NULL, FALSE);
-  g_return_val_if_fail (lock->fd != -1, FALSE);
+  g_assert_nonnull (lock);
+  g_assert_cmpint (lock->fd, !=, -1);
 
   OstreeRepoLockInfo info;
   repo_lock_info (lock, &info);
-  g_return_val_if_fail (info.len > 0, FALSE);
+  g_assert_cmpint (info.len, >, 0);
 
   g_debug ("Pop lock: state=%s, depth=%u", info.name, info.len);
   if (info.len > 1)
@@ -422,7 +422,7 @@ pop_repo_lock (OstreeRepo  *self,
       if (next_state != info.state)
         {
           /* We should never drop from shared to exclusive */
-          g_return_val_if_fail (next_state == LOCK_SH, FALSE);
+          g_assert_cmpint (next_state, ==, LOCK_SH);
           g_debug ("Returning lock state to shared");
           if (!do_repo_lock (lock->fd, next_state | flags))
             return glnx_throw_errno_prefix (error,
