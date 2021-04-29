@@ -1113,9 +1113,7 @@ ostree_repo_finalize (GObject *object)
         g_private_replace (&repo_lock_table, NULL);
     }
 
-  g_mutex_lock (&self->lock.mutex);
   glnx_close_fd (&self->lock.fd);
-  g_mutex_unlock (&self->lock.mutex);
   g_mutex_clear (&self->lock.mutex);
 
   G_OBJECT_CLASS (ostree_repo_parent_class)->finalize (object);
