@@ -352,7 +352,9 @@ push_repo_lock (OstreeRepo          *self,
     }
 
   /* Check for overflow */
-  g_assert_cmpuint (*counter, <, G_MAXUINT);
+  if (*counter == G_MAXUINT)
+    g_error ("Repo lock %s counter would overflow",
+             (next_state == LOCK_EX) ? "exclusive" : "shared");
 
   if (info.state == LOCK_EX || info.state == next_state)
     {
@@ -383,12 +385,15 @@ pop_repo_lock (OstreeRepo          *self,
   int flags = blocking ? 0 : LOCK_NB;
 
   g_autoptr(GMutexLocker) locker = g_mutex_locker_new (&self->lock.mutex);
-  g_return_val_if_fail (self->lock.fd != -1, FALSE);
+  if (self->lock.fd == -1)
+    g_error ("Cannot pop repo never locked repo lock");
 
   OstreeRepoLockInfo info;
   repo_lock_info (self, locker, &info);
-  g_return_val_if_fail (info.len > 0, FALSE);
   g_debug ("Pop lock: state=%s, depth=%u", info.name, info.len);
+
+  if (info.len == 0 || info.state == LOCK_UN)
+    g_error ("Cannot pop already unlocked repo lock");
 
   int state_to_drop;
   guint *counter;
@@ -404,7 +409,9 @@ pop_repo_lock (OstreeRepo          *self,
     }
 
   /* Make sure caller specified a valid type to release */
-  g_assert_cmpuint (*counter, >, 0);
+  if (*counter == 0)
+    g_error ("Repo %s lock pop requested, but none have been taken",
+             (lock_type == OSTREE_REPO_LOCK_EXCLUSIVE) ? "exclusive" : "shared");
 
   int next_state;
   if (info.len == 1)

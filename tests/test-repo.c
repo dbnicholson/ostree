@@ -320,6 +320,78 @@ test_repo_lock_single (Fixture       *fixture,
   g_assert_no_error (error);
 }
 
+/* Unlocking without having ever locked */
+static void
+test_repo_lock_unlock_never_locked (Fixture       *fixture,
+                                    gconstpointer  test_data)
+{
+  if (g_test_subprocess ())
+    {
+      g_autoptr(GError) error = NULL;
+      g_autoptr(OstreeRepo) repo = ostree_repo_open_at (fixture->tmpdir.fd, ".",
+                                                        NULL, &error);
+      g_assert_no_error (error);
+
+      ostree_repo_lock_pop (repo, OSTREE_REPO_LOCK_SHARED, NULL, &error);
+
+      return;
+    }
+
+  g_test_trap_subprocess (NULL, 0, 0);
+  g_test_trap_assert_failed ();
+  g_test_trap_assert_stderr ("*ERROR*Cannot pop repo never locked repo lock\n");
+}
+
+/* Unlocking after already unlocked */
+static void
+test_repo_lock_double_unlock (Fixture       *fixture,
+                              gconstpointer  test_data)
+{
+  if (g_test_subprocess ())
+    {
+      g_autoptr(GError) error = NULL;
+      g_autoptr(OstreeRepo) repo = ostree_repo_open_at (fixture->tmpdir.fd, ".",
+                                                        NULL, &error);
+      g_assert_no_error (error);
+
+      ostree_repo_lock_push (repo, OSTREE_REPO_LOCK_SHARED, NULL, &error);
+      g_assert_no_error (error);
+      ostree_repo_lock_pop (repo, OSTREE_REPO_LOCK_SHARED, NULL, &error);
+      g_assert_no_error (error);
+      ostree_repo_lock_pop (repo, OSTREE_REPO_LOCK_SHARED, NULL, &error);
+
+      return;
+    }
+
+  g_test_trap_subprocess (NULL, 0, 0);
+  g_test_trap_assert_failed ();
+  g_test_trap_assert_stderr ("*ERROR*Cannot pop already unlocked repo lock\n");
+}
+
+/* Unlocking the wrong type */
+static void
+test_repo_lock_unlock_wrong_type (Fixture       *fixture,
+                                  gconstpointer  test_data)
+{
+  if (g_test_subprocess ())
+    {
+      g_autoptr(GError) error = NULL;
+      g_autoptr(OstreeRepo) repo = ostree_repo_open_at (fixture->tmpdir.fd, ".",
+                                                        NULL, &error);
+      g_assert_no_error (error);
+
+      ostree_repo_lock_push (repo, OSTREE_REPO_LOCK_SHARED, NULL, &error);
+      g_assert_no_error (error);
+      ostree_repo_lock_pop (repo, OSTREE_REPO_LOCK_EXCLUSIVE, NULL, &error);
+
+      return;
+    }
+
+  g_test_trap_subprocess (NULL, 0, 0);
+  g_test_trap_assert_failed ();
+  g_test_trap_assert_stderr ("*ERROR*Repo exclusive lock pop requested, but none have been taken\n");
+}
+
 /* Locking with single thread and multiple OstreeRepos */
 static void
 test_repo_lock_multi_repo (Fixture       *fixture,
@@ -515,6 +587,12 @@ main (int    argc,
               test_repo_autolock, teardown);
   g_test_add ("/repo/lock/single", Fixture, NULL, lock_setup,
               test_repo_lock_single, teardown);
+  g_test_add ("/repo/lock/unlock-never-locked", Fixture, NULL, lock_setup,
+              test_repo_lock_unlock_never_locked, teardown);
+  g_test_add ("/repo/lock/double-unlock", Fixture, NULL, lock_setup,
+              test_repo_lock_double_unlock, teardown);
+  g_test_add ("/repo/lock/unlock-wrong-type", Fixture, NULL, lock_setup,
+              test_repo_lock_unlock_wrong_type, teardown);
   g_test_add ("/repo/lock/multi-repo", Fixture, NULL, lock_setup,
               test_repo_lock_multi_repo, teardown);
   g_test_add ("/repo/lock/multi-thread", Fixture, NULL, lock_setup,
