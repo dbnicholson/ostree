@@ -517,7 +517,7 @@ test_repo_lock_multi_thread (Fixture       *fixture,
                                                      NULL, &error);
   g_assert_no_error (error);
 
-  LockThreadData thread_data = {repo1, FALSE};
+  LockThreadData thread_data = {repo1, 0};
   GThread *thread1 = g_thread_new ("lock-thread-1", lock_thread1, &thread_data);
   GThread *thread2 = g_thread_new ("lock-thread-2", lock_thread2, &thread_data);
 
