@@ -325,6 +325,7 @@ push_repo_lock (OstreeRepo          *self,
                 GError             **error)
 {
   int flags = (lock_type == OSTREE_REPO_LOCK_EXCLUSIVE) ? LOCK_EX : LOCK_SH;
+  int next_state = flags;
   if (!blocking)
     flags |= LOCK_NB;
 
@@ -346,18 +347,11 @@ push_repo_lock (OstreeRepo          *self,
   repo_lock_info (self, locker, &info);
   g_debug ("Push lock: state=%s, depth=%u", info.name, info.len);
 
-  int next_state;
   guint *counter;
-  if (lock_type == OSTREE_REPO_LOCK_EXCLUSIVE)
-    {
-      next_state = LOCK_EX;
+  if (next_state == LOCK_EX)
       counter = &(self->lock.exclusive);
-    }
   else
-    {
-      next_state = LOCK_SH;
       counter = &(self->lock.shared);
-    }
 
   /* Check for overflow */
   if (*counter == G_MAXUINT)
@@ -365,12 +359,14 @@ push_repo_lock (OstreeRepo          *self,
 
   if (info.state == LOCK_EX || info.state == next_state)
     {
-      g_debug ("Repo already locked %s, extending stack", info.name);
+      g_debug ("Repo already locked %s, maintaining state", info.name);
     }
   else
     {
-      const char *next_state_name = lock_state_name (next_state);
+      /* We should never upgrade from exclusive to shared */
+      g_assert (!(info.state == LOCK_EX && next_state == LOCK_SH));
 
+      const char *next_state_name = lock_state_name (next_state);
       g_debug ("Locking repo %s", next_state_name);
       if (!do_repo_lock (self->lock.fd, flags))
         return glnx_throw_errno_prefix (error, "Locking repo %s failed",
@@ -464,13 +460,13 @@ pop_repo_lock (OstreeRepo          *self,
  * @cancellable: a #GCancellable
  * @error: a #GError
  *
- * Takes a lock on the repository and adds it to the lock stack. If @lock_type
+ * Takes a lock on the repository and adds it to the lock state. If @lock_type
  * is %OSTREE_REPO_LOCK_SHARED, a shared lock is taken. If @lock_type is
  * %OSTREE_REPO_LOCK_EXCLUSIVE, an exclusive lock is taken. The actual lock
  * state is only changed when locking a previously unlocked repository or
- * upgrading the lock from shared to exclusive. If the requested lock state is
+ * upgrading the lock from shared to exclusive. If the requested lock type is
  * unchanged or would represent a downgrade (exclusive to shared), the lock
- * state is not changed and the stack is simply updated.
+ * state is not changed.
  *
  * ostree_repo_lock_push() waits for the lock depending on the repository's
  * lock-timeout-secs configuration. When lock-timeout-secs is -1, a blocking lock is
@@ -559,10 +555,12 @@ ostree_repo_lock_push (OstreeRepo          *self,
  * @cancellable: a #GCancellable
  * @error: a #GError
  *
- * Remove the current repository lock state from the lock stack. If the lock
- * stack becomes empty, the repository is unlocked. Otherwise, the lock state
- * only changes when transitioning from an exclusive lock back to a shared
- * lock.
+ * Release a lock of type @lock_type from the lock state. If the lock state
+ * becomes empty, the repository is unlocked. Otherwise, the lock state only
+ * changes when transitioning from an exclusive lock back to a shared lock. The
+ * requested @lock_type must be the same type that was requested in the call to
+ * ostree_repo_lock_push(). It is a programmer error if these do not match and
+ * the program may abort if the lock would reach an invalid state.
  *
  * ostree_repo_lock_pop() waits for the lock depending on the repository's
  * lock-timeout-secs configuration. When lock-timeout-secs is -1, a blocking lock is
@@ -649,18 +647,17 @@ struct OstreeRepoAutoLock {
   OstreeRepoLockType lock_type;
 };
 
-/*
+/**
  * ostree_repo_auto_lock_push: (skip)
  * @self: a #OstreeRepo
  * @lock_type: the type of lock to acquire
  * @cancellable: a #GCancellable
  * @error: a #GError
  *
- * Like ostree_repo_lock_push(), but for usage with #OstreeRepoAutoLock.
- * The intended usage is to declare the #OstreeRepoAutoLock with
- * g_autoptr() so that ostree_repo_auto_lock_cleanup() is called when it
- * goes out of scope. This will automatically pop the lock status off
- * the stack if it was acquired successfully.
+ * Like ostree_repo_lock_push(), but for usage with #OstreeRepoAutoLock. The
+ * intended usage is to declare the #OstreeRepoAutoLock with g_autoptr() so
+ * that ostree_repo_auto_lock_cleanup() is called when it goes out of scope.
+ * This will automatically release the lock if it was acquired successfully.
  *
  * |[<!-- language="C" -->
  * g_autoptr(OstreeRepoAutoLock) lock = NULL;
