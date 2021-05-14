@@ -1528,7 +1528,7 @@ gboolean      ostree_repo_lock_pop (OstreeRepo          *self,
 #ifndef __GI_SCANNER__
 
 /**
- * OstreeRepoAutoLock:
+ * OstreeRepoAutoLock: (skip)
  *
  * An opaque type for use with ostree_repo_auto_lock_push().
  *
