@@ -181,10 +181,10 @@ G_DEFINE_TYPE (OstreeRepo, ostree_repo, G_TYPE_OBJECT)
  *   a shared lock concurrently while only one user can hold an
  *   exclusive lock.
  *
- * * The lock can be taken recursively so long as each acquisition is
- *   paired with a matching release. The recursion is also latched to
- *   the strongest state. Once an exclusive lock has been taken, it will
- *   remain exclusive until all exclusive states have been released.
+ * * The lock can be taken recursively so long as each acquisition is paired
+ *   with a matching release. The recursion is also latched to the strongest
+ *   state. Once an exclusive lock has been taken, it will remain exclusive
+ *   until all exclusive locks have been released.
  *
  * * It is both multiprocess- and multithread-safe. Threads that share
  *   an OstreeRepo use the lock cooperatively while processes and
@@ -200,13 +200,13 @@ G_DEFINE_TYPE (OstreeRepo, ostree_repo, G_TYPE_OBJECT)
  * reading objects in critical sections. Exclusive locks are taken when
  * deleting objects.
  *
- * To allow fine grained locking within libostree, the lock is treated
- * as a stack. The core APIs then push or pop from the stack. When
- * pushing or popping a lock state identical to the existing or next
- * state, the lock state is simply updated. Only when upgrading or
- * downgrading the lock (changing to/from unlocked, pushing exclusive on
- * shared or popping exclusive to shared) are actual locking operations
- * performed.
+ * To allow fine grained locking, the lock state is maintained in shared and
+ * exclusive counters. Callers then push or pop lock types to increment or
+ * decrement the counters. When pushing or popping a lock type identical to
+ * the existing or next state, the lock state is simply updated. Only when
+ * upgrading or downgrading the lock (changing to/from unlocked, pushing
+ * exclusive on shared or popping exclusive to shared) are actual locking
+ * operations performed.
  */
 
 typedef struct {

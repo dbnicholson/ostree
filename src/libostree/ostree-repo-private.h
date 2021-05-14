@@ -105,10 +105,10 @@ typedef struct {
 } OstreeRepoTxn;
 
 typedef struct {
-  GMutex mutex;
-  int fd;
-  guint shared; /* Number of shared locks */
-  guint exclusive; /* Number of exclusive locks */
+  GMutex mutex;  /* All other members should only be accessed with this held */
+  int fd;  /* The open file or flock file descriptor */
+  guint shared;  /* Number of shared locks curently held */
+  guint exclusive;  /* Number of exclusive locks currently held */
 } OstreeRepoLock;
 
 typedef enum {
