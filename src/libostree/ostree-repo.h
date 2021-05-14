@@ -1526,6 +1526,14 @@ gboolean      ostree_repo_lock_pop (OstreeRepo          *self,
 
 /* C convenience API only */
 #ifndef __GI_SCANNER__
+
+/**
+ * OstreeRepoAutoLock:
+ *
+ * An opaque type for use with ostree_repo_auto_lock_push().
+ *
+ * Since: 2021.2
+ */
 typedef struct OstreeRepoAutoLock OstreeRepoAutoLock;
 
 _OSTREE_PUBLIC

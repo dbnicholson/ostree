@@ -483,9 +483,9 @@ pop_repo_lock (OstreeRepo          *self,
  */
 gboolean
 ostree_repo_lock_push (OstreeRepo          *self,
-                        OstreeRepoLockType   lock_type,
-                        GCancellable        *cancellable,
-                        GError             **error)
+                       OstreeRepoLockType   lock_type,
+                       GCancellable        *cancellable,
+                       GError             **error)
 {
   g_return_val_if_fail (self != NULL, FALSE);
   g_return_val_if_fail (OSTREE_IS_REPO (self), FALSE);
@@ -684,7 +684,7 @@ ostree_repo_auto_lock_push (OstreeRepo          *self,
   return auto_lock;
 }
 
-/*
+/**
  * ostree_repo_auto_lock_cleanup: (skip)
  * @lock: a #OstreeRepoAutoLock
  *
