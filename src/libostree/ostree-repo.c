@@ -479,7 +479,7 @@ pop_repo_lock (OstreeRepo          *self,
  * %TRUE is returned.
  *
  * Returns: %TRUE on success, otherwise %FALSE with @error set
- * Since: 2021.2
+ * Since: 2021.3
  */
 gboolean
 ostree_repo_lock_push (OstreeRepo          *self,
@@ -573,7 +573,7 @@ ostree_repo_lock_push (OstreeRepo          *self,
  * %TRUE is returned.
  *
  * Returns: %TRUE on success, otherwise %FALSE with @error set
- * Since: 2021.2
+ * Since: 2021.3
  */
 gboolean
 ostree_repo_lock_pop (OstreeRepo          *self,
@@ -661,13 +661,13 @@ struct OstreeRepoAutoLock {
  *
  * |[<!-- language="C" -->
  * g_autoptr(OstreeRepoAutoLock) lock = NULL;
- * lock = _ostree_repo_auto_lock_push (repo, lock_type, cancellable, error);
+ * lock = ostree_repo_auto_lock_push (repo, lock_type, cancellable, error);
  * if (!lock)
  *   return FALSE;
  * ]|
  *
  * Returns: @self on success, otherwise %NULL with @error set
- * Since: 2021.2
+ * Since: 2021.3
  */
 OstreeRepoAutoLock *
 ostree_repo_auto_lock_push (OstreeRepo          *self,
@@ -692,7 +692,7 @@ ostree_repo_auto_lock_push (OstreeRepo          *self,
  * not %NULL, ostree_repo_lock_pop() will be called on it. If
  * ostree_repo_lock_pop() fails, a critical warning will be emitted.
  *
- * Since: 2021.2
+ * Since: 2021.3
  */
 void
 ostree_repo_auto_lock_cleanup (OstreeRepoAutoLock *auto_lock)

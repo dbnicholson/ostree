@@ -1506,7 +1506,7 @@ gboolean ostree_repo_regenerate_summary (OstreeRepo     *self,
  *
  * Flags controlling repository locking.
  *
- * Since: 2021.2
+ * Since: 2021.3
  */
 typedef enum {
   OSTREE_REPO_LOCK_SHARED,
@@ -1532,7 +1532,7 @@ gboolean      ostree_repo_lock_pop (OstreeRepo          *self,
  *
  * An opaque type for use with ostree_repo_auto_lock_push().
  *
- * Since: 2021.2
+ * Since: 2021.3
  */
 typedef struct OstreeRepoAutoLock OstreeRepoAutoLock;
 
