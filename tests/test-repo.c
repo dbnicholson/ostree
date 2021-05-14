@@ -285,14 +285,17 @@ test_repo_autolock (Fixture *fixture,
   g_assert_no_error (error);
 
   {
-    g_autoptr(OstreeRepoAutoLock)  lock = ostree_repo_auto_lock_push (repo, OSTREE_REPO_LOCK_EXCLUSIVE, NULL, &error);
+    g_auto(OstreeRepoAutoLock) lock = OSTREE_REPO_AUTO_LOCK_INIT;
+    ostree_repo_auto_lock_push (repo, OSTREE_REPO_LOCK_EXCLUSIVE, &lock, NULL, &error);
     g_assert_no_error (error);
   }
 
-  g_autoptr(OstreeRepoAutoLock)  lock1 = ostree_repo_auto_lock_push (repo, OSTREE_REPO_LOCK_SHARED, NULL, &error);
+  g_auto(OstreeRepoAutoLock) lock1 = OSTREE_REPO_AUTO_LOCK_INIT;
+  ostree_repo_auto_lock_push (repo, OSTREE_REPO_LOCK_SHARED, &lock1, NULL, &error);
   g_assert_no_error (error);
 
-  g_autoptr(OstreeRepoAutoLock) lock2 = ostree_repo_auto_lock_push (repo, OSTREE_REPO_LOCK_SHARED, NULL, &error);
+  g_auto(OstreeRepoAutoLock) lock2 = OSTREE_REPO_AUTO_LOCK_INIT;
+  ostree_repo_auto_lock_push (repo, OSTREE_REPO_LOCK_SHARED, &lock2, NULL, &error);
   g_assert_no_error (error);
 }
 

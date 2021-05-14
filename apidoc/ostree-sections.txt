@@ -324,7 +324,7 @@ ostree_repo_lock_pop
 ostree_repo_lock_push
 OstreeRepoAutoLock
 ostree_repo_auto_lock_push
-ostree_repo_auto_lock_cleanup
+ostree_repo_auto_lock_clear
 ostree_repo_hash
 ostree_repo_equal
 ostree_repo_copy_config

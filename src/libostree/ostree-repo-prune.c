@@ -203,9 +203,8 @@ ostree_repo_prune_static_deltas (OstreeRepo *self, const char *commit,
                                  GCancellable      *cancellable,
                                  GError           **error)
 {
-  g_autoptr(OstreeRepoAutoLock) lock =
-    ostree_repo_auto_lock_push (self, OSTREE_REPO_LOCK_EXCLUSIVE, cancellable, error);
-  if (!lock)
+  g_auto(OstreeRepoAutoLock) lock = OSTREE_REPO_AUTO_LOCK_INIT;
+  if (!ostree_repo_auto_lock_push (self, OSTREE_REPO_LOCK_EXCLUSIVE, &lock, cancellable, error))
     return FALSE;
 
   g_autoptr(GPtrArray) deltas = NULL;
@@ -324,9 +323,8 @@ ostree_repo_traverse_reachable_refs (OstreeRepo *self,
                                      GCancellable *cancellable,
                                      GError      **error)
 {
-  g_autoptr(OstreeRepoAutoLock) lock =
-    ostree_repo_auto_lock_push (self, OSTREE_REPO_LOCK_SHARED, cancellable, error);
-  if (!lock)
+  g_auto(OstreeRepoAutoLock) lock = OSTREE_REPO_AUTO_LOCK_INIT;
+  if (!ostree_repo_auto_lock_push (self, OSTREE_REPO_LOCK_SHARED, &lock, cancellable, error))
     return FALSE;
 
   /* Ignoring collections. */
@@ -399,9 +397,8 @@ ostree_repo_prune (OstreeRepo        *self,
                    GCancellable      *cancellable,
                    GError           **error)
 {
-  g_autoptr(OstreeRepoAutoLock) lock =
-    ostree_repo_auto_lock_push (self, OSTREE_REPO_LOCK_EXCLUSIVE, cancellable, error);
-  if (!lock)
+  g_auto(OstreeRepoAutoLock) lock = OSTREE_REPO_AUTO_LOCK_INIT;
+  if (!ostree_repo_auto_lock_push (self, OSTREE_REPO_LOCK_EXCLUSIVE, &lock, cancellable, error))
     return FALSE;
 
   g_autoptr(GHashTable) objects = NULL;
@@ -485,9 +482,8 @@ ostree_repo_prune_from_reachable (OstreeRepo        *self,
                                   GCancellable      *cancellable,
                                   GError           **error)
 {
-  g_autoptr(OstreeRepoAutoLock) lock =
-    ostree_repo_auto_lock_push (self, OSTREE_REPO_LOCK_EXCLUSIVE, cancellable, error);
-  if (!lock)
+  g_auto(OstreeRepoAutoLock) lock = OSTREE_REPO_AUTO_LOCK_INIT;
+  if (!ostree_repo_auto_lock_push (self, OSTREE_REPO_LOCK_EXCLUSIVE, &lock, cancellable, error))
     return FALSE;
 
   g_autoptr(GHashTable) objects = NULL;

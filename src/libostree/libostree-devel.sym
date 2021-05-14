@@ -25,7 +25,7 @@
 LIBOSTREE_2021.3 {
 global:
   ostree_repo_auto_lock_push;
-  ostree_repo_auto_lock_cleanup;
+  ostree_repo_auto_lock_clear;
   ostree_repo_lock_push;
   ostree_repo_lock_pop;
 } LIBOSTREE_2021.2;

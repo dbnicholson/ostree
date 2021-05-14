@@ -1535,16 +1535,33 @@ gboolean      ostree_repo_lock_pop (OstreeRepo          *self,
  * Since: 2021.3
  */
 typedef struct OstreeRepoAutoLock OstreeRepoAutoLock;
+struct OstreeRepoAutoLock {
+  OstreeRepo *repo;
+  OstreeRepoLockType lock_type;
+};
+
+/**
+ * OSTREE_REPO_AUTO_LOCK_INIT:
+ *
+ * An initializer for a statically-allocated #OstreeRepoAutoLock type.
+ * This ensures that it works correctly when it is passed to
+ * ostree_repo_auto_lock_clear(). See ostree_repo_auto_lock_push() for
+ * its intended usage.
+ *
+ * Since: 2021.3
+ */
+#define OSTREE_REPO_AUTO_LOCK_INIT { NULL, 0 }
 
 _OSTREE_PUBLIC
-OstreeRepoAutoLock * ostree_repo_auto_lock_push (OstreeRepo          *self,
-                                                 OstreeRepoLockType   lock_type,
-                                                 GCancellable        *cancellable,
-                                                 GError             **error);
+gboolean ostree_repo_auto_lock_push (OstreeRepo          *self,
+                                     OstreeRepoLockType   lock_type,
+                                     OstreeRepoAutoLock  *auto_lock,
+                                     GCancellable        *cancellable,
+                                     GError             **error);
 
 _OSTREE_PUBLIC
-void ostree_repo_auto_lock_cleanup (OstreeRepoAutoLock *lock);
-G_DEFINE_AUTOPTR_CLEANUP_FUNC (OstreeRepoAutoLock, ostree_repo_auto_lock_cleanup)
+void ostree_repo_auto_lock_clear (OstreeRepoAutoLock *auto_lock);
+G_DEFINE_AUTO_CLEANUP_CLEAR_FUNC (OstreeRepoAutoLock, ostree_repo_auto_lock_clear)
 
 #endif
 

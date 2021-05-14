@@ -504,9 +504,8 @@ ostree_sysroot_cleanup_prune_repo (OstreeSysroot          *sysroot,
   /* Hold an exclusive lock by default across gathering refs and doing
    * the prune.
    */
-  g_autoptr(OstreeRepoAutoLock) lock =
-    ostree_repo_auto_lock_push (repo, OSTREE_REPO_LOCK_EXCLUSIVE, cancellable, error);
-  if (!lock)
+  g_auto(OstreeRepoAutoLock) lock = OSTREE_REPO_AUTO_LOCK_INIT;
+  if (!ostree_repo_auto_lock_push (repo, OSTREE_REPO_LOCK_EXCLUSIVE, &lock, cancellable, error))
     return FALSE;
 
   /* Ensure reachable has refs, but default to depth 0.  This is

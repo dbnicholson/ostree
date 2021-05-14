@@ -1269,9 +1269,8 @@ ostree_repo_static_delta_reindex (OstreeRepo                 *repo,
   gboolean opt_indexed_deltas;
 
   /* Protect against parallel prune operation */
-  g_autoptr(OstreeRepoAutoLock) lock =
-    ostree_repo_auto_lock_push (repo, OSTREE_REPO_LOCK_SHARED, cancellable, error);
-  if (!lock)
+  g_auto(OstreeRepoAutoLock) lock = OSTREE_REPO_AUTO_LOCK_INIT;
+  if (!ostree_repo_auto_lock_push (repo, OSTREE_REPO_LOCK_SHARED, &lock, cancellable, error))
     return FALSE;
 
   /* Enusre that the "indexed-deltas" option is set on the config, so we know this when pulling */
