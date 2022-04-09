@@ -3,9 +3,7 @@ name: Docs
 
 on:
   push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+    branches: [man-html-pub]
 
 permissions:
   # This workflow pushes to the gh-pages branch, so the token needs write
@@ -40,6 +38,6 @@ jobs:
           target_branch: gh-pages
           # Only publish when pushing to main.
           # XXX: Maybe this should only run on the release event?
-          build_only: ${{ github.ref == 'refs/heads/main' && 'false' || 'true' }}
+          # build_only: ${{ github.ref == 'refs/heads/main' && 'false' || 'true' }}
           # Run the prep script to put the API docs in place.
           pre_build_commands: ./docs/prep-docs.sh
